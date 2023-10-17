@@ -2,9 +2,8 @@
 #include <ATen/native/mkl/SparseCsrLinearAlgebra.h>
 #include <ATen/native/SparseTensorUtils.h>
 
-// Don't compile with MKL for MSVC/macos since linking the sparse MKL routines
+// Don't compile with MKL for macos since linking the sparse MKL routines
 // needs some build fixes.
-// https://github.com/pytorch/pytorch/pull/50937#issuecomment-778732740
 // Macros source:
 // https://web.archive.org/web/20191012035921/http://nadeausoftware.com/articles/2012/01/c_c_tip_how_use_compiler_predefined_macros_detect_operating_system
 #if !AT_MKL_ENABLED() || defined(__APPLE__) || \
