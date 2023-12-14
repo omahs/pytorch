@@ -2839,7 +2839,6 @@ class TestVmapOperators(Namespace.TestVmapBase):
         res = vmap(foo)(x)
         self.assertEqual(res, x.conj())
 
-    @xfailIfTorchDynamo
     def test_mode_key(self):
         def vmap_f(x):
             return x + torch.randn(())
@@ -5090,8 +5089,9 @@ class TestTransformFailure(TestCase):
     @skipIfTorchDynamo
     @parametrize('transform', ['vmap', 'grad', 'grad_and_value', 'vjp', 'jvp', 'jacrev', 'jacfwd'])
     def test_fails_with_autograd_function(self, device, transform):
+        failed_build_envs = ('linux-focal-py3.8-clang10', 'linux-focal-py3.11-clang10')
         if (device == 'cpu' and transform in ['grad', 'vmap'] and
-                TEST_WITH_TORCHDYNAMO and os.getenv('BUILD_ENVIRONMENT', '') == 'linux-focal-py3.8-clang10'):
+                TEST_WITH_TORCHDYNAMO and os.getenv('BUILD_ENVIRONMENT', '') in failed_build_envs):
             raise unittest.SkipTest("Unexpected successes on focal with dynamo," +
                                     " see https://github.com/pytorch/pytorch/issues/107173")
 
@@ -5350,7 +5350,6 @@ class TestVmapNestedTensor(Namespace.TestVmapBase):
                 RuntimeError, "Nested tensors can only be vmapped over dim=0"):
             vmap(f, in_dims=2)(x)
 
-    @xfailIfTorchDynamo
     def test_nt_with_nonzero_out_dim_raises(self, device):
         def f(x):
             return x
@@ -5360,8 +5359,6 @@ class TestVmapNestedTensor(Namespace.TestVmapBase):
                 RuntimeError, "Nested tensors can only be vmapped over dim=0"):
             vmap(f, out_dims=2)(x)
 
-    @xfailIfTorchDynamo
-    @allowVmapFallbackUsage
     def test_fallback_with_nt_and_batched_dense_with_nonzero_bdim_raises(self, device):
         def f(x, y):
             return x @ y
