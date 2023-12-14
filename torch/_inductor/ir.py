@@ -3434,7 +3434,7 @@ class ConcatKernel(NopKernel):
             concat_kernel.inputs.append(input_buffer)
 
             if (
-                copy_required and len(inputs) >= 2
+                copy_required and len(inputs) >= 10
                 and input.get_device().type == "cuda"
                 and not is_dynamic(input_buffer)
             ):
