@@ -206,6 +206,7 @@ def speculate_subgraph(
     manually_set_subgraph_inputs=True,
     restore_side_effects=True,
     should_flatten_outputs=False,
+    should_flatten_inputs=False,
     # Pass in an originating tracer - this is needed for preserving context
     # across fwd-bwd for autograd.Function
     tracer=None,
@@ -225,18 +226,42 @@ def speculate_subgraph(
             lambda x: x.realize(),
             (f, sub_args, sub_kwargs),
         )
-        with tx.output.subtracer(source_target, tracer) as subtracer:
-            args = validate_args_and_maybe_create_graph_inputs(
-                sub_args, subtracer, tx, manually_set_subgraph_inputs, description
-            )
 
-            validate_args_and_maybe_create_graph_inputs(
-                sub_kwargs.values(),
-                subtracer,
-                tx,
-                manually_set_subgraph_inputs=False,
-                description=description,
-            )
+        with tx.output.subtracer(source_target, tracer) as subtracer:
+            if should_flatten_inputs:
+                if sub_kwargs:
+                    unimplemented(
+                        "Passing both `should_flatten_inputs=True` and `sub_kwargs` is not supported."
+                    )
+
+                flat_args, tree_spec = _make_inlined(tx, pytree.tree_flatten)(
+                    ListVariable(sub_args)
+                ).unpack_var_sequence(tx)
+
+                args = validate_args_and_maybe_create_graph_inputs(
+                    flat_args.items,
+                    subtracer,
+                    tx,
+                    manually_set_subgraph_inputs=True,
+                    description=description,
+                )
+                args = _make_inlined(tx, pytree.tree_unflatten)(
+                    ListVariable(args), tree_spec
+                )
+                args = args.items
+
+            else:
+                args = validate_args_and_maybe_create_graph_inputs(
+                    sub_args, subtracer, tx, manually_set_subgraph_inputs, description
+                )
+
+                validate_args_and_maybe_create_graph_inputs(
+                    sub_kwargs.values(),
+                    subtracer,
+                    tx,
+                    manually_set_subgraph_inputs=False,
+                    description=description,
+                )
 
             autograd_ctx = (
                 dynamo_enable_grad(tx, enable_grad)
@@ -746,7 +771,9 @@ class MapHigherOrderVariable(TorchHigherOrderOperatorVariable):
             {},
             "torch.ops.higher_order.map",
             source_target=self.value,
+            manually_set_subgraph_inputs=False,
             should_flatten_outputs=True,
+            should_flatten_inputs=True,
         )
 
         body_nn_modules = dict(tx.output.nn_modules)
@@ -759,11 +786,11 @@ class MapHigherOrderVariable(TorchHigherOrderOperatorVariable):
         )
 
         body_node = make_attr(tx, body_name)
+
         p_args = (
             body_node,
             1,  # right now we only supports num_mapped = 1
-            *(arg.as_proxy() for arg in args[1:]),
-            *(arg for arg in body_lifted_freevars.keys()),
+            *([arg.as_proxy() for arg in args[1:]] + list(body_lifted_freevars.keys())),
         )
         return _call_function_and_unflatten_output(
             tx, torch.ops.higher_order.map_impl, p_args, {}, body_r, body_spec
