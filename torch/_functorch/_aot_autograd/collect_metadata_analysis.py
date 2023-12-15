@@ -8,12 +8,14 @@ a functionalized version of the graph under compilation.
 """
 
 import collections
+import contextlib
 from functools import wraps
 from typing import Callable, DefaultDict, Dict, List
 
 import torch
 import torch.utils._pytree as pytree
 from torch import Tensor
+from torch._dispatch.python import enable_pre_dispatch
 from torch._logging import getArtifactLogger
 from torch._subclasses.functional_tensor import FunctionalTensor, FunctionalTensorMode
 from torch._subclasses.meta_utils import safe_is_leaf
@@ -75,6 +77,7 @@ def run_functionalized_fw_and_collect_metadata(
     # TODO: refactor to kill this flag
     is_train: bool = False,
     requires_subclass_dispatch: bool = False,
+    pre_dispatch: bool = False,
 ) -> Callable[..., ViewAndMutationMeta]:
     memo: Dict[Tensor, Tensor] = {}
 
@@ -96,8 +99,6 @@ def run_functionalized_fw_and_collect_metadata(
         input_info: List[InputAliasInfo] = []
         output_info: List[OutputAliasInfo] = []
 
-        flat_f_args = pytree.tree_map(_to_fun, flat_args)
-
         prior_grad_enabled = torch.is_grad_enabled()
         prior_autocast_states = _get_autocast_states()
 
@@ -105,8 +106,16 @@ def run_functionalized_fw_and_collect_metadata(
         disable_above = torch._C._ExcludeDispatchKeyGuard(
             torch._C.DispatchKeySet(torch._C.DispatchKey.Functionalize)
         )
-        with disable_above, FunctionalTensorMode():
+
+        pre_dispatch_ctx = (
+            enable_pre_dispatch() if pre_dispatch else contextlib.nullcontext()
+        )
+
+        with disable_above, FunctionalTensorMode(
+            pre_dispatch=pre_dispatch
+        ), pre_dispatch_ctx:  # type: ignore[attr-defined]
             # precondition: The passed in function already handles unflattening inputs + flattening outputs
+            flat_f_args = pytree.tree_map(_to_fun, flat_args)
             flat_f_outs = f(*flat_f_args)
 
         if prior_autocast_states != _get_autocast_states():
