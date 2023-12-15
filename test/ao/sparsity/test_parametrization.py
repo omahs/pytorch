@@ -8,7 +8,7 @@ from torch.ao.pruning.sparsifier import utils
 from torch.nn.utils import parametrize
 
 import torch
-from torch.testing._internal.common_utils import TestCase
+from torch.testing._internal.common_utils import TestCase, skipIfTorchDynamo
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
@@ -36,6 +36,7 @@ class ModelUnderTest(nn.Module):
         return x
 
 
+@torch.testing._internal.common_utils.markDynamoStrictTest
 class TestFakeSparsity(TestCase):
     def test_masking_logic(self):
         model = nn.Linear(16, 16, bias=False)
@@ -126,6 +127,7 @@ class TestFakeSparsity(TestCase):
         self.assertNotEqual(model_save.seq[1].parametrizations['weight'][0].mask,
                             model_load.seq[1].parametrizations['weight'][0].mask)
 
+    @skipIfTorchDynamo("flaky")
     def test_jit_trace(self):
         model = ModelUnderTest(bias=False)
 
