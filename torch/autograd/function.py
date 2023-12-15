@@ -1,5 +1,6 @@
 import functools
 import inspect
+import itertools
 import warnings
 from collections import OrderedDict
 from typing import Any, List, Optional, Tuple
@@ -21,6 +22,10 @@ __all__ = [
     "InplaceFunction",
     "NestedIOFunction",
 ]
+
+# Unique id provider for each class inheriting from Function
+# This is incremented in FunctionMeta during class definition
+AUTOGRAD_FUNCTION_COUNTER = itertools.count()
 
 
 # Formerly known as: _ContextMethodMixin
@@ -309,6 +314,7 @@ class FunctionMeta(type):
         backward_fn = type(
             name + "Backward", (BackwardCFunction,), {"_forward_cls": cls}
         )
+        backward_fn._autograd_function_id = next(AUTOGRAD_FUNCTION_COUNTER)  # type: ignore[attr-defined]
         cls._backward_cls = backward_fn
 
         super().__init__(name, bases, attrs)
@@ -561,6 +567,10 @@ class Function(_SingleLevelFunction):
             )
 
         return custom_function_call(cls, *args, **kwargs)
+
+    @staticmethod
+    def _compiled_autograd_key(ctx):
+        return (ctx._autograd_function_id,)
 
 
 def once_differentiable(fn):
