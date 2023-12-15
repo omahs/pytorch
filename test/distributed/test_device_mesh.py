@@ -9,7 +9,7 @@ from torch.distributed._tensor._collective_utils import (
     mesh_broadcast,
     mesh_scatter,
 )
-from torch.distributed._tensor.placement_types import Shard
+from torch.distributed._tensor.placement_types import _Partial, Shard
 from torch.distributed.device_mesh import _mesh_resources, DeviceMesh, init_device_mesh
 
 from torch.distributed.distributed_c10d import (
@@ -453,6 +453,46 @@ class DeviceMeshCollectiveTest(DTensorTestBase):
 
             self.assertEqual(all_gathered_tensor.size(), tensor_to_split.size())
             self.assertEqual(all_gathered_tensor, tensor_to_split)
+
+    @with_comms
+    def test_reduce_scatter_contiguous(self):
+        device_mesh = DeviceMesh(self.device_type, list(range(self.world_size)))
+        my_rank = device_mesh.get_rank()
+
+        # Init the tensor
+        step = self.world_size * 2
+        total_elem = step**2
+        tensor = torch.arange(0, total_elem).view(step, -1).to(device=self.device_type)
+        tensor = tensor * (my_rank + 1)
+
+        # Get non-contiguous tensor by slicing
+        tensor_to_reduce = tensor[::2, :2]
+        tensor_contiguous = tensor_to_reduce.clone().contiguous()
+
+        # Partial to Shard to trigger reduce_scatter
+        partial_placement = _Partial()
+        shard_spec = Shard(0)
+        new_tensor = partial_placement._to_shard(
+            tensor_to_reduce, device_mesh, 0, shard_spec
+        )
+        new_tensor_contiguous = partial_placement._to_shard(
+            tensor_contiguous, device_mesh, 0, shard_spec
+        )
+
+        # The output for contiguous and non-contiguous tensors of the same value
+        # should return the same reducescatter value.
+        self.assertEqual(new_tensor, new_tensor_contiguous)
+        self.assertEqual(list(new_tensor.size()), [1, 2])
+
+        # Check the reduce numerical value
+        sum_base = (1 + self.world_size) * self.world_size / 2
+        first_elem = my_rank * sum_base * step * 2
+        expected_tensor = torch.tensor(
+            [[first_elem, first_elem + sum_base]],
+            dtype=new_tensor.dtype,
+            device=self.device_type,
+        )
+        self.assertEqual(new_tensor, expected_tensor)
 
     @with_comms
     def test_reduce_scatter_uneven(self):
