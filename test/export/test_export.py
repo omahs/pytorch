@@ -1380,7 +1380,7 @@ class TestExport(TestCase):
                     return x.cos()
                 return x.sin()
 
-        graph_module = capture_pre_autograd_graph(Foo(), (torch.ones(7, 5),))
+        graph_module = capture_pre_autograd_graph(Foo(), (torch.ones(7, 5),), _functional_pre_dispatch_IR=True)
         with self.assertRaisesRegex(NotImplementedError, r"Calling train\(\) is not supported yet."):
             graph_module.train()
 
@@ -1412,13 +1412,15 @@ class TestExport(TestCase):
         example_inputs = (torch.randn(1, 3, 3, 3),)
         m = CondBranchClassMethod()
         m.eval()
-        gm = capture_pre_autograd_graph(m, example_inputs)
+        # TODO (tmanlaibaatar) It doesn't work on aot_export yet
+        gm = capture_pre_autograd_graph(m, example_inputs, _functional_pre_dispatch_IR=False)
 
         actual_source_fns = []
         for mod in gm.modules():
             for node in mod.graph.nodes:
                 if node.name in {"sin", "cos"}:
                     source_fn_st = node.meta.get("source_fn_stack", None)
+                    print(source_fn_st)
                     if source_fn_st is not None:
                         source_names = []
                         for source_fn in source_fn_st:
@@ -1722,20 +1724,18 @@ def forward(self, l_x_):
                 return x.sum() + self.buffer.sum()
 
         inp = torch.randn(4, 4)
-        gm = capture_pre_autograd_graph(Foo(), (inp,), constraints=[dynamic_dim(inp, 0) >= 3])
+        gm = capture_pre_autograd_graph(Foo(), (inp,), constraints=[dynamic_dim(inp, 0) >= 3], _functional_pre_dispatch_IR=True)
 
-        with self.assertRaisesRegex(RuntimeError, "Input arg0_1"):
+        with self.assertRaisesRegex(RuntimeError, "l_x_.shape\[1\]"):
             gm(torch.randn(2, 2))
 
-        with self.assertRaisesRegex(RuntimeError, "Input arg0_1"):
+        with self.assertRaisesRegex(RuntimeError, "l_x_.shape\[1\]"):
             torch.export.export(gm, (torch.randn(2, 2),))
 
         ep = torch.export.export(gm, (torch.randn(5, 4),), dynamic_shapes=({0: torch.export.Dim("dim", min=3)},))
 
         test_inp = torch.ones(8, 4)
-        # This is actually correct because how make_fx modifies the buffer since
-        # there is no functionalization.
-        self.assertTrue(torch.allclose(ep(test_inp), Foo().forward(test_inp) + 4*4*4))
+        self.assertTrue(torch.allclose(ep(test_inp), Foo().forward(test_inp)))
 
     @testing.expectedFailureNonStrict
     def test_issue_113041(self):
@@ -1872,6 +1872,7 @@ def forward(self, l_x_):
         exported_model = capture_pre_autograd_graph(
             m,
             (tensor_cpu, mask_cpu),
+            _functional_pre_dispatch_IR=True,
         )
         optimized_model = torch.compile(exported_model)
         optimized_model(tensor_cpu, mask_cpu)
