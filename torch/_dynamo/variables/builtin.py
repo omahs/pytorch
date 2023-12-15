@@ -845,6 +845,7 @@ class BuiltinVariable(VariableTracker):
         if obj is None:
             if cls is SetVariable:
                 return cls(
+                    tx,
                     [],
                     mutable_local=MutableLocal(),
                 )
@@ -916,7 +917,7 @@ class BuiltinVariable(VariableTracker):
                 items = user_cls()
                 for x in arg.unpack_var_sequence(tx):
                     k, v = x.unpack_var_sequence(tx)
-                    k = ConstDictVariable.get_key(k)
+                    k = ConstDictVariable.get_key(tx, k)
                     items.update({k: v})
                 return ConstDictVariable(items, user_cls, mutable_local=MutableLocal())
         elif not args and kwargs:
@@ -1131,6 +1132,7 @@ class BuiltinVariable(VariableTracker):
         if not name_var.is_python_constant():
             unimplemented("non-const getattr() name")
 
+        # Note - grad attribute mutation is handled below
         if tx.output.side_effects.is_attribute_mutation(obj) and name != "grad":
             try:
                 # re-read a pending side effect?
@@ -1285,9 +1287,8 @@ class BuiltinVariable(VariableTracker):
             name = name_var.as_python_constant()
             if isinstance(obj, variables.TensorVariable):
                 from .builder import wrap_fx_proxy
-
-                if name == "requires_grad":
-                    # TODO(voz): Make it work properly
+                if name == "requires_grad" and not config.trace_distributed:
+                    # TODO(voz): Make it work properly for all cases
                     unimplemented(
                         "mutating requires_grad can introduce a new leaf from non-leaf or vice versa in "
                         "the middle of the graph, which aot_autograd does not currently know how to handle. "
@@ -1337,13 +1338,13 @@ class BuiltinVariable(VariableTracker):
                     _lower_version_count_by_1(obj.as_proxy().node.meta["example_value"])
                     # This handles options prop, guards and ends with a clone
                     # Step 4 - replace all reference to the current object with the new one
-                    return out
+                    return tx.replace_all(obj, out)
 
             tx.output.side_effects.store_attr(obj, name, val)
             return val
         elif isinstance(obj, variables.UserDefinedObjectVariable):
             unimplemented(
-                f"setattr(UserDefinedObjectVariable) {type(obj.value).__setattr__}"
+                f"setattr(UserDefinedObjectVariable) {obj.source} {type(obj.value).__setattr__}"
             )
         elif isinstance(obj, variables.NNModuleVariable):
             if not tx.output.is_root_tracer():
@@ -1495,6 +1496,7 @@ class BuiltinVariable(VariableTracker):
             UserFunctionVariable,
         )
         from .lists import SizeVariable
+        from .nn_module import FSDPManagedNNModuleVariable
         from .tensor import (
             supported_const_comparison_ops,
             supported_tensor_comparison_ops,
@@ -1505,23 +1507,42 @@ class BuiltinVariable(VariableTracker):
         def _unimplemented():
             unimplemented(f"comparison {typestr(left)} {op} {typestr(right)}")
 
+        def _resolve_getattr(get_attr_var):
+            # This comparison is going to access an attribute that was not initially
+            # there, but may be now. That is the only case when GetAttrVariable should
+            # be created. So, we need to resolve it first.
+            assert isinstance(get_attr_var, variables.GetAttrVariable)
+            try:
+                return get_attr_var.call_function(tx, [], {})
+            except Exception as e:
+                _unimplemented()
+
+        if isinstance(left, variables.GetAttrVariable):
+            left = _resolve_getattr(left)
+
+        if isinstance(right, variables.GetAttrVariable):
+            right = _resolve_getattr(right)
+
         if (
             all(
-                isinstance(x, (NNModuleVariable, ConstantVariable))
+                isinstance(
+                    x, (NNModuleVariable, ConstantVariable, FSDPManagedNNModuleVariable)
+                )
                 for x in [left, right]
             )
             and op in supported_const_comparison_ops.values()
         ):
-            left = (
-                tx.output.get_submodule(left.module_key)
-                if isinstance(left, NNModuleVariable)
-                else left.as_python_constant()
-            )
-            right = (
-                tx.output.get_submodule(right.module_key)
-                if isinstance(right, NNModuleVariable)
-                else right.as_python_constant()
-            )
+
+            def _get(element):
+                if isinstance(element, NNModuleVariable):
+                    return tx.output.get_submodule(element.module_key)
+                if isinstance(element, FSDPManagedNNModuleVariable):
+                    return element.value
+                else:
+                    return element.as_python_constant()
+
+            left = _get(left)
+            right = _get(right)
             return ConstantVariable.create(op(left, right))
 
         if isinstance(left, UserFunctionVariable):
@@ -1530,6 +1551,15 @@ class BuiltinVariable(VariableTracker):
             if not isinstance(right, UserFunctionVariable):
                 _unimplemented()
             return ConstantVariable.create(op(left.fn, right.fn))
+
+        if isinstance(left, variables.distributed.ProcessGroupVariable):
+            if op not in supported_const_comparison_ops.values():
+                _unimplemented()
+            if not isinstance(
+                right, (variables.distributed.ProcessGroupVariable, ConstantVariable)
+            ):
+                _unimplemented()
+            return ConstantVariable(op(left.value, right.value))
 
         # Note, we have a rare BaseListVariable subtype mismatch with valid comparison
         # x = torch.randn([3, 3])
@@ -1546,10 +1576,13 @@ class BuiltinVariable(VariableTracker):
             return BaseListVariable.list_compare(tx, op, left, right)
 
         if isinstance(left, SetVariable):
+            if isinstance(right, ConstantVariable) and right.value is None:
+                return ConstantVariable(op(left._underlying_items(tx), right.value))
+
             if not type(left) == type(right):  # Mismatch in BaseListVariable subclasses
                 _unimplemented()
             return ConstantVariable.create(
-                op(left._underlying_items, right._underlying_items)
+                op(left._underlying_items(tx), right._underlying_items(tx))
             )
 
         if isinstance(left, TensorVariable) or isinstance(right, TensorVariable):
@@ -1675,7 +1708,6 @@ class BuiltinVariable(VariableTracker):
 
     call_all = _polyfill_call_impl("all")
     call_any = _polyfill_call_impl("any")
-
 
 @contextlib.contextmanager
 def dynamo_disable_grad(tx):
