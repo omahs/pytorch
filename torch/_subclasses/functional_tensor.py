@@ -392,13 +392,21 @@ def maybe_disable_functional_mode():
 # TODO: clean up the redundancy here,
 # unify on a single context manager for all mode keys.
 @contextlib.contextmanager
-def unset_functional_temporarily():
-    old = torch._C._unset_dispatch_mode(torch._C._TorchDispatchModeKey.FUNCTIONAL)
+def unset_functional_temporarily(is_pre_dispatch=False):
+    from torch._ops import _set_mode_pre_dispatch, unset_mode_pre_dispatch
+
+    old = (
+        torch._C._unset_dispatch_mode(torch._C._TorchDispatchModeKey.FUNCTIONAL)
+        if not is_pre_dispatch
+        else unset_mode_pre_dispatch(torch._C._TorchDispatchModeKey.FUNCTIONAL)
+    )
     try:
         yield old
     finally:
         if old is not None:
-            torch._C._set_dispatch_mode(old)
+            torch._C._set_dispatch_mode(
+                old
+            ) if not is_pre_dispatch else _set_mode_pre_dispatch(old)
 
 
 # This is similar to torch.func.functionalize, but:
@@ -496,7 +504,7 @@ class PythonFunctionalizeAPI(BaseFunctionalizeAPI):
         return dispatch_functionalize(inner_f, self.mode)
 
     def redispatch_to_next(self) -> ContextManager:
-        return unset_functional_temporarily()
+        return unset_functional_temporarily(self.mode.pre_dispatch)
 
     def replace(self, input_tensor, output_tensor) -> None:
         assert isinstance(input_tensor, FunctionalTensor)
