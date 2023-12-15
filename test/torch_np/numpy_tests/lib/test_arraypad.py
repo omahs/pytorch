@@ -2,6 +2,8 @@
 
 from unittest import skipIf as skipif
 
+import torch
+
 from torch.testing._internal.common_utils import (
     run_tests,
     TEST_WITH_TORCHDYNAMO,
@@ -20,6 +22,7 @@ else:
     from torch._numpy.testing import assert_allclose, assert_array_equal
 
 
+@torch.testing._internal.common_utils.markDynamoStrictTest
 class TestConstant(TestCase):
     @xpassIfTorchDynamo  # (reason="tuple values")
     def test_check_constant(self):

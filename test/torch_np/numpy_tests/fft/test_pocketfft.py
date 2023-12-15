@@ -6,6 +6,7 @@ import threading
 from unittest import skipIf as skipif, SkipTest
 
 import pytest
+import torch
 from pytest import raises as assert_raises
 
 from torch.testing._internal.common_utils import (
@@ -39,12 +40,14 @@ def fft1(x):
     return np.sum(x * np.exp(phase), axis=1)
 
 
+@torch.testing._internal.common_utils.markDynamoStrictTest
 class TestFFTShift(TestCase):
     def test_fft_n(self):
         assert_raises((ValueError, RuntimeError), np.fft.fft, [1, 2, 3], 0)
 
 
 @instantiate_parametrized_tests
+@torch.testing._internal.common_utils.markDynamoStrictTest
 class TestFFT1D(TestCase):
     def setUp(self):
         np.random.seed(123456)
@@ -345,6 +348,7 @@ class TestFFT1D(TestCase):
 
 
 @skipif(IS_WASM, reason="Cannot start thread")
+@torch.testing._internal.common_utils.markDynamoStrictTest
 class TestFFTThreadSafe(TestCase):
     threads = 16
     input_shape = (800, 200)

@@ -13,6 +13,8 @@ import operator
 
 from unittest import skipIf as skip, SkipTest
 
+import torch
+
 from pytest import raises as assert_raises
 from torch.testing._internal.common_utils import (
     instantiate_parametrized_tests,
@@ -157,6 +159,7 @@ parametrize_binary_ufuncs = parametrize(
 
 
 @instantiate_parametrized_tests
+@torch.testing._internal.common_utils.markDynamoStrictTest
 class TestBinaryUfuncs(TestCase):
     def get_xy(self, ufunc):
         return np.arange(5, dtype="float64"), np.arange(8, 13, dtype="float64")
@@ -214,6 +217,7 @@ dtypes_numeric = [np.int32, np.float32, np.float64, np.complex128]
 
 
 @instantiate_parametrized_tests
+@torch.testing._internal.common_utils.markDynamoStrictTest
 class TestNdarrayDunderVsUfunc(TestCase):
     """Test ndarray dunders which delegate to ufuncs, vs ufuncs."""
 
@@ -360,6 +364,7 @@ class TestNdarrayDunderVsUfunc(TestCase):
             assert result_op.dtype == result_ufunc.dtype
 
 
+@torch.testing._internal.common_utils.markDynamoStrictTest
 class TestUfuncDtypeKwd(TestCase):
     def test_binary_ufunc_dtype(self):
         # default computation uses float64:

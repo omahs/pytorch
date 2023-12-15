@@ -9,6 +9,7 @@ Extensive tests of this sort of functionality is in numpy_tests/core/*scalar*
 Also test the isscalar function (which is deliberately a bit more lax).
 """
 
+import torch
 from torch.testing._internal.common_utils import (
     instantiate_parametrized_tests,
     parametrize,
@@ -40,6 +41,7 @@ parametrize_value = parametrize(
 
 
 @instantiate_parametrized_tests
+@torch.testing._internal.common_utils.markDynamoStrictTest
 class TestArrayScalars(TestCase):
     @parametrize_value
     def test_array_scalar_basic(self, value):
@@ -88,6 +90,7 @@ class TestArrayScalars(TestCase):
 
 # @xfailIfTorchDynamo
 @instantiate_parametrized_tests
+@torch.testing._internal.common_utils.markDynamoStrictTest
 class TestIsScalar(TestCase):
     #
     # np.isscalar(...) checks that its argument is a numeric object with exactly one element.

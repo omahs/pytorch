@@ -13,6 +13,7 @@ try:
 except ImportError:
     HAVE_NUMPY = False
 
+import torch
 import torch._numpy as tnp
 from torch._numpy import (  # noqa: F401
     array,
@@ -88,6 +89,7 @@ examples = {
 
 @skipif(not HAVE_NUMPY, reason="NumPy not found")
 @instantiate_parametrized_tests
+@torch.testing._internal.common_utils.markDynamoStrictTest
 class TestNEP50Table(TestCase):
     @parametrize("example", examples)
     def test_nep50_exceptions(self, example):
@@ -153,6 +155,7 @@ corners = {
 
 @skipif(not HAVE_NUMPY, reason="NumPy not found")
 @instantiate_parametrized_tests
+@torch.testing._internal.common_utils.markDynamoStrictTest
 class TestCompareToNumpy(TestCase):
     @parametrize("scalar, array, dtype", itertools.product(weaks, non_weaks, dtypes))
     def test_direct_compare(self, scalar, array, dtype):
