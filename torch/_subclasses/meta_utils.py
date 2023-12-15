@@ -326,7 +326,7 @@ class MetaConverter:
                         StatelessSymbolicContext,
                     )
 
-                    if shape_env and not t.is_nested and not t._base.is_nested:
+                    if shape_env and not t._base.is_nested:
                         base_symbolic_context = StatelessSymbolicContext(
                             dynamic_sizes=[DimDynamic.STATIC] * t._base.dim(),
                             constraint_sizes=[None] * t._base.dim(),
@@ -390,20 +390,45 @@ class MetaConverter:
                         # So we may have to do *two* views out of the base to
                         # recreate this situation.
                         def _view_from_base(base, t):
-                            if t.is_nested:
-                                # Nested tensors do not support as_strided, and
-                                # hence,always have _view_func available.
-                                #
-                                # The unsafe version of _view_func omits
-                                # checking whether the base passed in has the same
-                                # metadata as the original base the view_func
-                                # was originally executed with. (1) It is OK here,
-                                # because we're calling it on the meta-ified base,
-                                # so the metadata is guaranteed to be the same.
-                                # (2) It is necessary because we don't actually
-                                # want to guard on the base's metadata here.
-                                return t._view_func_unsafe(base)
+                            if is_traceable_wrapper_subclass(t):
+                                if is_traceable_wrapper_subclass(base):
+                                    # subclass view of subclass: replay view_func
+                                    return t._view_func_unsafe(base)
+                                else:
+                                    from torch._dynamo.source import AttrSource
+                                    from torch.fx.experimental.symbolic_shapes import (
+                                        SubclassSymbolicContext,
+                                    )
+
+                                    (
+                                        sizes,
+                                        strides,
+                                        storage_offset,
+                                    ) = sym_sizes_strides_storage_offset(t, source)
+
+                                    assert isinstance(
+                                        symbolic_context, SubclassSymbolicContext
+                                    )
+
+                                    return transform_subclass(
+                                        t,
+                                        lambda attr, inner_t: callback(
+                                            lambda: empty_create(
+                                                inner_t,
+                                                AttrSource(source, attr),
+                                                symbolic_context=(
+                                                    symbolic_context.inner_contexts[
+                                                        attr
+                                                    ]
+                                                ),
+                                            )
+                                        ),
+                                        outer_size=sizes,
+                                        outer_stride=strides,
+                                        base=base,
+                                    )
                             else:
+                                # TODO: Handle dense view of subclass
                                 (
                                     sizes,
                                     strides,
