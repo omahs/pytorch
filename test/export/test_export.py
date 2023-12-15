@@ -1845,5 +1845,219 @@ def forward(self, l_x_):
         ep.run_decompositions(decomp_table=torch._decomp.decomposition_table)
         self.assertEqual(ep(t, dim, index, src), output)
 
+    def test_nn_module_stack(self):
+        class Leaf(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.linear = torch.nn.Linear(4, 4)
+
+            def forward(self, x):
+                return self.linear(x)
+
+        class Bar(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.leaf = Leaf()
+                self.register_buffer("buffer", torch.randn(4, 4))
+
+            def forward(self, x):
+                return self.buffer.sum() + self.leaf(x).sum()
+
+        class Foo(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.bar = Bar()
+
+            def forward(self, x):
+                y = self.bar.buffer + x
+                return (self.bar(x) + y.sum(),)
+
+        inp = (torch.randn(4, 4),)
+        mod = Foo()
+        ep_strict = torch.export.export(mod, inp)
+        ep_non_strict = torch.export.export(mod, inp, strict=False)
+
+        gm_unflat_non_strict = ep_non_strict.module(flat=False)
+        self.assertTrue(hasattr(gm_unflat_non_strict, "bar"))
+        self.assertTrue(hasattr(gm_unflat_non_strict.bar, "buffer"))
+        self.assertTrue(hasattr(gm_unflat_non_strict.bar, "leaf"))
+
+        gm_unflat_strict = ep_strict.module(flat=False)
+
+        self.assertEqual(gm_unflat_non_strict(*inp), gm_unflat_strict(*inp))
+        self.assertExpectedInline(
+            str(gm_unflat_non_strict.bar.leaf.linear.code).strip(), """\
+def forward(self, arg3_1):
+    bias = self.bias
+    weight = self.weight
+    t = torch.ops.aten.t.default(weight);  weight = None
+    addmm = torch.ops.aten.addmm.default(bias, arg3_1, t);  bias = arg3_1 = t = None
+    return addmm"""
+        )
+
+        gm_flat_non_strict = ep_non_strict.module()
+        gm_flat_strict = ep_strict.module()
+
+        self.assertEqual(gm_flat_non_strict(*inp), gm_flat_strict(*inp))
+
+    def test_nn_module_stack_shared_submodule(self):
+        class Leaf(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.linear = torch.nn.Linear(4, 4)
+
+            def forward(self, x):
+                return self.linear(x)
+
+        class Bar(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.leaf = Leaf()
+                self.register_buffer("buffer", torch.randn(4, 4))
+
+            def forward(self, x):
+                return self.buffer.sum() + self.leaf(x).sum()
+
+        class BarDifferent(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.leaf = Leaf()
+
+            def forward(self, x):
+                return self.leaf(x).sum()
+
+        class Foo(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.bar = Bar()
+                self.bar_different = BarDifferent()
+
+            def forward(self, x):
+                y = self.bar.buffer + x
+                return (self.bar(x) + self.bar_different(x + 2), y.sum(),)
+
+        inp = (torch.randn(4, 4),)
+        mod = Foo()
+        ep_strict = torch.export.export(mod, inp)
+        ep_non_strict = torch.export.export(mod, inp, strict=False)
+
+        gm_unflat_non_strict = ep_non_strict.module(flat=False)
+        self.assertTrue(hasattr(gm_unflat_non_strict, "bar"))
+        self.assertTrue(hasattr(gm_unflat_non_strict.bar, "buffer"))
+        self.assertTrue(hasattr(gm_unflat_non_strict.bar, "leaf"))
+        self.assertTrue(hasattr(gm_unflat_non_strict.bar_different, "leaf"))
+
+        gm_unflat_strict = ep_strict.module(flat=False)
+
+        self.assertEqual(gm_unflat_non_strict(*inp), gm_unflat_strict(*inp))
+        self.assertExpectedInline(
+            str(gm_unflat_non_strict.bar.leaf.linear.code).strip(), """\
+def forward(self, arg5_1):
+    bias = self.bias
+    weight = self.weight
+    t = torch.ops.aten.t.default(weight);  weight = None
+    addmm = torch.ops.aten.addmm.default(bias, arg5_1, t);  bias = arg5_1 = t = None
+    return addmm"""
+        )
+        self.assertExpectedInline(
+            str(gm_unflat_non_strict.bar_different.leaf.linear.code).strip(), """\
+def forward(self, add_2):
+    bias = self.bias
+    weight = self.weight
+    t_1 = torch.ops.aten.t.default(weight);  weight = None
+    addmm_1 = torch.ops.aten.addmm.default(bias, add_2, t_1);  bias = add_2 = t_1 = None
+    return addmm_1"""
+        )
+
+        gm_flat_non_strict = ep_non_strict.module()
+        gm_flat_strict = ep_strict.module()
+
+        self.assertEqual(gm_flat_non_strict(*inp), gm_flat_strict(*inp))
+
+    def test_cond_with_module_stack_export_with(self):
+        class Bar(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.linear = torch.nn.Linear(4, 4)
+
+            def forward(self, x):
+                def true_fn(x):
+                    return self.linear(x).cos()
+                def false_fn(x):
+                    return self.linear(x).sin()
+                return torch.cond(x.shape[0] > 4, true_fn, false_fn, [x])
+
+        class CondExport(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.bar = Bar()
+
+            def forward(self, x):
+                return x.cos() + self.bar(x)
+
+        inp = (torch.randn(4, 4),)
+        ep = torch.export.export(CondExport(), inp, strict=False)
+        self.assertExpectedInline(ep.graph_module.code.strip(), """\
+def forward(self, arg0_1, arg1_1, arg2_1):
+    cos = torch.ops.aten.cos.default(arg2_1)
+    true_graph_0 = self.true_graph_0
+    false_graph_0 = self.false_graph_0
+    conditional = torch.ops.higher_order.cond(False, true_graph_0, false_graph_0, [arg1_1, arg0_1, arg2_1]);  true_graph_0 = false_graph_0 = arg1_1 = arg0_1 = arg2_1 = None
+    getitem = conditional[0];  conditional = None
+    add = torch.ops.aten.add.Tensor(cos, getitem);  cos = getitem = None
+    return (add,)""")
+
+        cond_top_level_nn_module_stack = [
+            node.meta["nn_module_stack"]
+            for node in ep.graph.nodes
+            if node.name == "true_graph_0"
+        ][0]
+
+        self.assertExpectedInline(
+            str(cond_top_level_nn_module_stack),
+            """{'L__self__': ('', <class 'torch.fx.experimental.proxy_tensor.CondExport'>), 'L__self__bar': ('bar', <class 'torch.fx.experimental.proxy_tensor.Bar'>)}"""
+        )
+
+
+    # TODO: See https://github.com/pytorch/pytorch/issues/115790
+    @unittest.expectedFailure
+    def test_cond_with_module_stack_export_with_unflatten(self):
+        class Bar(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.linear = torch.nn.Linear(4, 4)
+
+            def forward(self, x):
+                def true_fn(x):
+                    return self.linear(x).cos()
+                def false_fn(x):
+                    return self.linear(x).sin()
+                return torch.cond(x.shape[0] > 4, true_fn, false_fn, [x])
+
+        class CondExport(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.bar = Bar()
+
+            def forward(self, x):
+                return x.cos() + self.bar(x)
+
+        inp = (torch.randn(4, 4),)
+        ep = torch.export.export(CondExport(), inp, strict=False)
+
+        cond_top_level_nn_module_stack = [
+            node.meta["nn_module_stack"]
+            for node in ep.graph.nodes
+            if node.name == "true_graph_0"
+        ][0]
+
+        # we can't preserve nn_module_stack for the subgraphs for now.
+        for node in ep.graph_module.true_graph_0.graph.nodes:
+            self.assertEqual(node.meta["nn_module_stack"], cond_top_level_nn_module_stack)
+
+        # this doesn't work today
+        gm_unflat_strict = ep.module(flat=False)
+
+
 if __name__ == '__main__':
     run_tests()
